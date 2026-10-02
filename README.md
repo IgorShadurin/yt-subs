@@ -8,7 +8,7 @@ A native Swift macOS menu bar app for YouTube subscriber counts. Choose **YouTub
 - Three green flashes on an increase, red on a decrease, across two seconds. First readings and switching data sources do not flash.
 - One-minute checks by default, or a custom interval in minutes/hours.
 - Channel name and avatar are fetched automatically for either source. Metadata persists locally; avatar images are cached on disk by channel, reused across launches, and refreshed when their URL changes or after 24 hours. Switching channels clears the previous channel's display.
-- An opaque, readable popover shows the channel, source, subscriber count, last successful update, and next check.
+- An opaque, readable popover shows the channel, source, subscriber count, last successful update, and next check. Click **YouTube Studio** to open the configured channel in your default browser.
 - Failed checks show a red error with the attempt time, keep the last successful count, and retry after the configured interval capped at ten minutes.
 - Checks resume after waking. Polling pauses while the Mac sleeps.
 

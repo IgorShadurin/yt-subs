@@ -201,8 +201,17 @@ struct Dashboard: View {
                 }.frame(width: 60, height: 60).clipShape(Circle())
                 VStack(alignment: .leading, spacing: 5) {
                     Text(model.snapshot?.title ?? "Your YouTube channel").font(.system(size: 20, weight: .semibold)).lineLimit(2)
-                    Text((model.snapshot?.source ?? model.source) == "studio" ? "YouTube Studio · Exact count" : "YouTube API · Rounded count")
-                        .font(.system(size: 13)).foregroundStyle(.secondary)
+                    HStack(spacing: 4) {
+                        if (model.snapshot?.source ?? model.source) == "studio",
+                           let channel = ChannelInput.id(from: model.channelID),
+                           let url = URL(string: "https://studio.youtube.com/channel/" + channel) {
+                            Link("YouTube Studio", destination: url)
+                                .help("Open this channel in YouTube Studio using your default browser")
+                            Text("· Exact count").foregroundStyle(.secondary)
+                        } else {
+                            Text("YouTube API · Rounded count").foregroundStyle(.secondary)
+                        }
+                    }.font(.system(size: 13))
                 }
                 Spacer(minLength: 0)
             }
