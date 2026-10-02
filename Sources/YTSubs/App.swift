@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import ServiceManagement
 import YTSubsCore
 
 @main
@@ -10,6 +11,8 @@ struct YTSubsApp: App {
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
+    @Published var launchAtLogin = false
+    @Published var loginMessage: String?
     @Published var snapshot: ChannelSnapshot?
     @Published var avatar: NSImage?
     private let avatars = AvatarCache()
@@ -34,6 +37,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
+        updateLoginStatus()
+        if CommandLine.arguments.contains("--enable-login") { setLaunchAtLogin(true) }
         if source == "api" { key = Keychain.read() }
         if let data = UserDefaults.standard.data(forKey: "snapshot"),
            let cached = try? JSONDecoder().decode(ChannelSnapshot.self, from: data), cached.id == channelID,
@@ -163,6 +168,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         window.center(); window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
     }
+    func updateLoginStatus() {
+        let status = SMAppService.mainApp.status
+        launchAtLogin = status == .enabled
+        UserDefaults.standard.set(status.rawValue, forKey: "loginItemStatus")
+        if status == .requiresApproval {
+            loginMessage = "Allow YT Subs in System Settings → General → Login Items."
+        }
+    }
+    func setLaunchAtLogin(_ enabled: Bool) {
+        loginMessage = nil
+        do {
+            if enabled { try SMAppService.mainApp.register() }
+            else { try SMAppService.mainApp.unregister() }
+            updateLoginStatus()
+        } catch {
+            updateLoginStatus()
+            loginMessage = "Could not change launch at login: " + error.localizedDescription
+        }
+    }
     func closeSettings() { settingsWindow?.close() }
 }
 
@@ -212,8 +236,9 @@ struct Dashboard: View {
                     .background(Color.red.opacity(0.08), in: RoundedRectangle(cornerRadius: 12))
             }
             HStack(spacing: 12) {
-                Button { model.refresh() } label: { Label("Refresh", systemImage: "arrow.clockwise") }
+                Button { model.refresh() } label: { Label(model.refreshing ? "Updating…" : "Update now", systemImage: "arrow.clockwise") }
                     .buttonStyle(.borderedProminent).disabled(model.refreshing || model.channelID.isEmpty)
+                    .help("Fetch the latest subscriber count immediately")
                 Button("Settings…") { model.showSettings() }
                 Spacer()
                 Button("Quit") { NSApp.terminate(nil) }.foregroundStyle(.secondary)
@@ -261,6 +286,10 @@ struct SettingsView: View {
                 Text("Check every")
                 TextField("1", text: $amount).frame(width: 65)
                 Picker("Unit", selection: $hours) { Text("minutes").tag(false); Text("hours").tag(true) }.labelsHidden().frame(width: 115)
+            }
+            Toggle("Launch YT Subs at login", isOn: Binding(get: { model.launchAtLogin }, set: { model.setLaunchAtLogin($0) }))
+            if let loginMessage = model.loginMessage {
+                Text(loginMessage).font(.system(size: 13)).foregroundStyle(.red).fixedSize(horizontal: false, vertical: true)
             }
             Text(source == "studio" ? "Menu bar: 1,526 below 10,000; 10.1k above. Studio provides the exact count at each check." : "YouTube API rounds counts from 1,000 subscribers. Choose Studio for exact counts.").font(.system(size: 13)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             if let message { Text(message).font(.caption).foregroundStyle(.red) }

@@ -21,7 +21,9 @@ node --test extension/tests.cjs
 open "dist/YT Subs.app"
 ```
 
-The script builds an ad-hoc-signed app for the current Mac's architecture. The app is not notarized for public binary distribution. You can open `Package.swift` in Xcode or copy the resulting app to Applications. For a separate dashboard window, launch with `open "dist/YT Subs.app" --args --dashboard`; `--settings` opens settings at launch. Add it to System Settings → General → Login Items to start at login.
+For a stable installation in your user Applications folder, run `./scripts/install-app.sh`. Launch that installed copy before enabling launch at login.
+
+The script builds an ad-hoc-signed app for the current Mac's architecture. The app is not notarized for public binary distribution. You can open `Package.swift` in Xcode or copy the resulting app to Applications. For a separate dashboard window, launch with `open "dist/YT Subs.app" --args --dashboard`; `--settings` opens settings at launch. Enable **Launch YT Subs at login** in Settings to start automatically after signing into your Mac. This uses macOS Login Items; disabling the toggle unregisters it. The blue **Update now** button fetches the latest count immediately without waiting for the scheduled check. Chrome must still be running for Studio checks.
 
 ## Exact counts: Chrome + YouTube Studio
 
