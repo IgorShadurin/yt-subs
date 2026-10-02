@@ -30,6 +30,15 @@ final class CoreTests: XCTestCase {
         XCTAssertEqual(result.title, "Channel")
         XCTAssertThrowsError(try YouTubeAPI.decode(data, channelID: "different"))
     }
+    func testAPIAlsoReturnsAutomaticAvatarAndSource() throws {
+        let data = Data("""
+        {"items":[{"id":"\(channel)","snippet":{"title":"Updated name","thumbnails":{"medium":{"url":"https://yt3.ggpht.com/new-avatar"}}},"statistics":{"subscriberCount":"1520"}}]}
+        """.utf8)
+        let result = try YouTubeAPI.decode(data, channelID: channel)
+        XCTAssertEqual(result.title, "Updated name")
+        XCTAssertEqual(result.avatarURL, "https://yt3.ggpht.com/new-avatar")
+        XCTAssertEqual(result.source, "api")
+    }
     func testMissingHiddenAndInvalidNeverBecomeZero() {
         for stats in ["{}", "{\"subscriberCount\":\"123\",\"hiddenSubscriberCount\":true}", "{\"subscriberCount\":\"invalid\"}"] {
             let data = Data("{\"items\":[{\"id\":\"\(channel)\",\"snippet\":{\"title\":\"Channel\"},\"statistics\":\(stats)}]}".utf8)

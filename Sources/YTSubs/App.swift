@@ -11,7 +11,13 @@ struct YTSubsApp: App {
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     @Published var snapshot: ChannelSnapshot?
+    @Published var avatar: NSImage?
+    private let avatars = AvatarCache()
+    private var avatarTask: Task<Void, Never>?
     @Published var lastAttemptFailed = false
+    @Published var errorMessage: String?
+    @Published var lastAttempt: Date?
+    var source = UserDefaults.standard.string(forKey: "source") ?? "studio"
     @Published var refreshing = false
     @Published var nextCheck: Date?
     var channelID = UserDefaults.standard.string(forKey: "channelID") ?? ""
@@ -23,11 +29,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     private var flash: Task<Void, Never>?
     private var generation = 0
     private var settingsWindow: NSWindow?
+    private var dashboardWindow: NSWindow?
     private let popover = NSPopover()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
-        key = Keychain.read()
+        if source == "api" { key = Keychain.read() }
         if let data = UserDefaults.standard.data(forKey: "snapshot"),
            let cached = try? JSONDecoder().decode(ChannelSnapshot.self, from: data), cached.id == channelID,
            Date().timeIntervalSince(cached.fetchedAt) < 30 * 86400 { snapshot = cached }
@@ -36,14 +43,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         item.button?.action = #selector(togglePopover)
         popover.behavior = .transient
         popover.contentViewController = NSHostingController(rootView: Dashboard(model: self))
+        avatar = avatars.cached(channelID)
         render()
         NSWorkspace.shared.notificationCenter.addObserver(self, selector: #selector(woke), name: NSWorkspace.didWakeNotification, object: nil)
-        if channelID.isEmpty || key.isEmpty { showSettings() } else { refresh() }
+        if channelID.isEmpty || (source == "api" && key.isEmpty) { showSettings() } else { refresh() }
+        if CommandLine.arguments.contains("--settings") { showSettings() }
+        if CommandLine.arguments.contains("--show") {
+            Task { @MainActor in
+                try? await Task.sleep(for: .milliseconds(500))
+                togglePopover()
+            }
+        }
+        if CommandLine.arguments.contains("--dashboard") { showDashboardWindow() }
+    }
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        if !popover.isShown { togglePopover() }; return true
     }
     @objc func woke() { if nextCheck == nil || nextCheck! <= Date() { refresh() } }
     @objc func togglePopover() {
         if popover.isShown { popover.performClose(nil) }
-        else if let button = item.button { popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY) }
+        else if let button = item.button {
+            NSApp.activate(ignoringOtherApps: true)
+            popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+            popover.contentViewController?.view.window?.makeKey()
+        }
     }
     func render(color: NSColor = .labelColor) {
         let title = snapshot.map { SubscriberFormat.string($0.count) } ?? "—"
@@ -66,19 +89,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         }
     }
     func refresh() {
-        guard !refreshing, !channelID.isEmpty, !key.isEmpty else { return }
+        guard !refreshing, !channelID.isEmpty, (source == "studio" || !key.isEmpty) else { return }
         timer?.invalidate(); nextCheck = nil
         refreshing = true
         let currentGeneration = generation
-        let channel = channelID, apiKey = key
+        let channel = channelID, apiKey = key, selectedSource = source
         request = Task { @MainActor in
             var failed = false
             do {
-                let result = try await YouTubeAPI.fetch(channelID: channel, key: apiKey)
+                let result = try await selectedSource == "studio"
+                    ? StudioClient.fetch(channelID: channel)
+                    : YouTubeAPI.fetch(channelID: channel, key: apiKey)
                 guard !Task.isCancelled, generation == currentGeneration else { return }
-                let previous = snapshot?.count
+                let previous = snapshot?.source == result.source ? snapshot?.count : nil
                 snapshot = result
+                avatarTask?.cancel()
+                avatarTask = Task { @MainActor in
+                    let image = await avatars.update(channelID: result.id, url: result.avatarURL)
+                    guard !Task.isCancelled, channelID == result.id else { return }
+                    avatar = image
+                }
                 lastAttemptFailed = false
+                errorMessage = nil
                 if let data = try? JSONEncoder().encode(result) { UserDefaults.standard.set(data, forKey: "snapshot") }
                 render()
                 if let previous, previous != result.count { animate(increased: result.count > previous) }
@@ -86,8 +118,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
                 guard !Task.isCancelled, generation == currentGeneration else { return }
                 failed = true
                 lastAttemptFailed = true
+                errorMessage = selectedSource == "studio" ? error.localizedDescription : APIError.response.localizedDescription
                 // Keep the last successful value. No alert, zero, or false change animation.
             }
+            lastAttempt = Date()
             refreshing = false
             let delay = PollPolicy.delay(interval: interval, failed: failed)
             nextCheck = Date().addingTimeInterval(delay)
@@ -96,12 +130,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
             }
         }
     }
-    func save(channel: String, apiKey: String, seconds: Double) throws {
-        try Keychain.save(apiKey)
+    func save(channel: String, apiKey: String, seconds: Double, source: String) throws {
+        if !apiKey.isEmpty { try Keychain.save(apiKey) }
         generation += 1
         request?.cancel(); timer?.invalidate(); flash?.cancel(); refreshing = false
-        if channelID != channel { snapshot = nil; UserDefaults.standard.removeObject(forKey: "snapshot") }
-        channelID = channel; key = apiKey; interval = seconds
+        if channelID != channel { avatarTask?.cancel(); avatar = nil; snapshot = nil; UserDefaults.standard.removeObject(forKey: "snapshot") }
+        channelID = channel; key = apiKey; interval = seconds; self.source = source
+        errorMessage = nil; lastAttemptFailed = false
+        UserDefaults.standard.set(source, forKey: "source")
         UserDefaults.standard.set(channel, forKey: "channelID")
         UserDefaults.standard.set(seconds, forKey: "interval")
         render(); refresh()
@@ -114,8 +150,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
             window.isReleasedWhenClosed = false
             settingsWindow = window
         }
-        settingsWindow?.contentView = NSHostingView(rootView: SettingsView(model: self, channel: channelID, apiKey: key, amount: String(interval / 60)))
+        settingsWindow?.contentView = NSHostingView(rootView: SettingsView(model: self, channel: channelID, apiKey: key, amount: String(interval / 60), source: source))
         settingsWindow?.center(); settingsWindow?.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+    func showDashboardWindow() {
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 410, height: 440), styleMask: [.titled, .closable], backing: .buffered, defer: false)
+        window.title = "YT Subs"
+        window.isReleasedWhenClosed = false
+        window.contentView = NSHostingView(rootView: Dashboard(model: self))
+        dashboardWindow = window
+        window.center(); window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
     }
     func closeSettings() { settingsWindow?.close() }
@@ -124,34 +169,56 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
 struct Dashboard: View {
     @ObservedObject var model: AppDelegate
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            HStack {
-                Image(systemName: "play.rectangle.fill").foregroundStyle(.red)
-                Text("YT Subs").font(.headline)
-                Spacer()
-                if model.refreshing { ProgressView().controlSize(.small) }
+        VStack(alignment: .leading, spacing: 22) {
+            HStack(spacing: 14) {
+                Group {
+                    if let avatar = model.avatar { Image(nsImage: avatar).resizable().scaledToFill() }
+                    else { ZStack { Color.red.opacity(0.10); Image(systemName: "play.rectangle.fill").font(.title).foregroundStyle(.red) } }
+                }.frame(width: 60, height: 60).clipShape(Circle())
+                VStack(alignment: .leading, spacing: 5) {
+                    Text(model.snapshot?.title ?? "Your YouTube channel").font(.system(size: 20, weight: .semibold)).lineLimit(2)
+                    Text((model.snapshot?.source ?? model.source) == "studio" ? "YouTube Studio · Exact count" : "YouTube API · Rounded count")
+                        .font(.system(size: 13)).foregroundStyle(.secondary)
+                }
+                Spacer(minLength: 0)
             }
-            VStack(alignment: .leading, spacing: 4) {
-                Text(model.snapshot?.title ?? "Connect your channel").font(.subheadline).foregroundStyle(.secondary).lineLimit(2)
-                Text(model.snapshot.map { SubscriberFormat.string($0.count) } ?? "—").font(.system(size: 40, weight: .semibold, design: .rounded)).monospacedDigit()
-                Text("subscribers").foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(model.snapshot?.count.formatted(.number.locale(Locale(identifier: "en_US"))) ?? "—")
+                    .font(.system(size: 54, weight: .bold, design: .rounded)).monospacedDigit().minimumScaleFactor(0.5).lineLimit(1).fixedSize(horizontal: false, vertical: true)
+                Text("Subscribers").font(.system(size: 17)).foregroundStyle(.secondary)
             }
-            if let snapshot = model.snapshot {
-                Text("Updated \(snapshot.fetchedAt.formatted(date: .abbreviated, time: .shortened))").font(.caption).foregroundStyle(.secondary)
-                if snapshot.count >= 1000 { Text("YouTube rounds counts to three significant figures.").font(.caption).foregroundStyle(.secondary) }
+            VStack(alignment: .leading, spacing: 12) {
+                HStack {
+                    Label("Last updated", systemImage: "clock")
+                    Spacer()
+                    Text(model.snapshot?.fetchedAt.formatted(date: .omitted, time: .standard) ?? "Not yet").monospacedDigit()
+                }
+                if let snapshot = model.snapshot {
+                    Text(snapshot.fetchedAt.formatted(date: .abbreviated, time: .omitted)).foregroundStyle(.secondary)
+                }
+                HStack {
+                    Label(model.refreshing ? (model.source == "studio" ? "Checking Studio…" : "Checking YouTube…") : "Next check", systemImage: "arrow.clockwise")
+                    Spacer()
+                    if model.refreshing { ProgressView().controlSize(.small) }
+                    else { Text(model.nextCheck?.formatted(date: .omitted, time: .standard) ?? "—").monospacedDigit() }
+                }
+            }.font(.system(size: 14)).padding(16).background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 12))
+            if let error = model.errorMessage {
+                VStack(alignment: .leading, spacing: 6) {
+                    Label("Update failed", systemImage: "exclamationmark.triangle.fill").font(.system(size: 15, weight: .semibold))
+                    Text(error).font(.system(size: 14)).fixedSize(horizontal: false, vertical: true)
+                    if let attempt = model.lastAttempt { Text("Failed at " + attempt.formatted(date: .omitted, time: .standard) + ". Keeping the last successful count.").font(.system(size: 13)) }
+                }.foregroundStyle(.red).padding(14).frame(maxWidth: .infinity, alignment: .leading)
+                    .background(Color.red.opacity(0.08), in: RoundedRectangle(cornerRadius: 12))
             }
-            if model.lastAttemptFailed {
-                Text("Last check skipped. Retrying automatically.").font(.caption).foregroundStyle(.secondary)
-            }
-            if let next = model.nextCheck { Text("Next check: \(next.formatted(date: .omitted, time: .standard))").font(.caption).foregroundStyle(.secondary) }
-            Divider()
-            HStack {
-                Button("Refresh", systemImage: "arrow.clockwise") { model.refresh() }.disabled(model.refreshing || model.channelID.isEmpty)
+            HStack(spacing: 12) {
+                Button { model.refresh() } label: { Label("Refresh", systemImage: "arrow.clockwise") }
+                    .buttonStyle(.borderedProminent).disabled(model.refreshing || model.channelID.isEmpty)
                 Button("Settings…") { model.showSettings() }
                 Spacer()
-                Button("Quit") { NSApp.terminate(nil) }
-            }
-        }.padding(20).frame(width: 340)
+                Button("Quit") { NSApp.terminate(nil) }.foregroundStyle(.secondary)
+            }.controlSize(.large)
+        }.padding(24).frame(width: 410).background(Color(nsColor: .windowBackgroundColor))
     }
 }
 
@@ -160,32 +227,42 @@ struct SettingsView: View {
     @State var channel: String
     @State var apiKey: String
     @State var amount: String
+    @State var source: String
     @State private var hours = false
     @State private var message: String?
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
             Label("Your channel, at a glance", systemImage: "play.rectangle.fill").font(.title2.bold())
             Text("Keep your YouTube subscriber count in the menu bar.").foregroundStyle(.secondary)
+            Picker("Get subscriber count from", selection: $source) {
+                Text("YouTube Studio (exact)").tag("studio")
+                Text("YouTube API (rounded)").tag("api")
+            }
             VStack(alignment: .leading, spacing: 6) {
                 Text("Channel ID or channel URL").font(.headline)
                 TextField("UC… or https://www.youtube.com/channel/…", text: $channel)
                 Text("Use a /channel/ URL, not an @handle.").font(.caption).foregroundStyle(.secondary)
             }
+            if source == "studio" {
+                Text("Enable YT Subs Studio in Chrome. Each check briefly opens an inactive Studio tab using your existing sign-in, then closes it.")
+                    .font(.system(size: 13)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            } else {
             VStack(alignment: .leading, spacing: 6) {
                 Text("YouTube Data API key").font(.headline)
-                SecureField("Paste your API key", text: $apiKey)
+                SecureField("Paste a key, or leave blank to reuse the saved key", text: $apiKey)
                 HStack {
                     Text("Saved securely in macOS Keychain.").font(.caption).foregroundStyle(.secondary)
                     Spacer()
                     Link("Get a free key ↗", destination: URL(string: "https://console.cloud.google.com/apis/credentials")!)
                 }
             }
+            }
             HStack {
                 Text("Check every")
                 TextField("1", text: $amount).frame(width: 65)
                 Picker("Unit", selection: $hours) { Text("minutes").tag(false); Text("hours").tag(true) }.labelsHidden().frame(width: 115)
             }
-            Text("Below 10,000: 1,526 · 10,000+: 10.1k. YouTube may round counts from 1,000 subscribers.").font(.caption).foregroundStyle(.secondary)
+            Text(source == "studio" ? "Menu bar: 1,526 below 10,000; 10.1k above. Studio provides the exact count at each check." : "YouTube API rounds counts from 1,000 subscribers. Choose Studio for exact counts.").font(.system(size: 13)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             if let message { Text(message).font(.caption).foregroundStyle(.red) }
             HStack {
                 Spacer()
@@ -196,12 +273,13 @@ struct SettingsView: View {
     }
     func save() {
         guard let id = ChannelInput.id(from: channel) else { message = "Enter a valid channel ID or /channel/ URL."; return }
-        let key = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !key.isEmpty else { message = "Enter your YouTube Data API key."; return }
+        var key = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        if source == "api" && key.isEmpty { key = Keychain.read() }
+        guard source == "studio" || !key.isEmpty else { message = "Enter your YouTube Data API key."; return }
         guard let value = Double(amount), value.isFinite, value > 0 else { message = "Enter a positive interval."; return }
         let seconds = value * (hours ? 3600 : 60)
         guard seconds >= 60, seconds <= 365 * 86400 else { message = "Choose an interval from 1 minute to 365 days."; return }
-        do { try model.save(channel: id, apiKey: key, seconds: seconds); model.closeSettings() }
+        do { try model.save(channel: id, apiKey: key, seconds: seconds, source: source); model.closeSettings() }
         catch { message = "Could not save the key in Keychain. Please try again." }
     }
 }

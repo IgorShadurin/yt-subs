@@ -1,0 +1,23 @@
+{
+  "manifest_version": 3,
+  "name": "YT Subs Studio",
+  "version": "1.1.0",
+  "description": "Send your exact YouTube Studio subscriber count to the local YT Subs macOS app.",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAsMD/9gq1NEPNuoB13G5Pdq94KCZ7e+RFxLKMfJhjqadOXyDjGAwGY8JCdbnZmJ1SdzUmSbJTWBU0IvxWOhS4z2EIkrMApOKy4/nfrz6w6XewEO6wA8rKDFYZlhUThpDNnRf+QfoakCEYg35m1PcU1Afw90OK5xixXv5gYSd6x3snridqtcqlzg1Htb18Fmi1I1m2oVkExYZbvUkKJGVAJoM9XjgB6+r1SuP1kT9WdrFoANgyilvYptSPH4DjeMn69BJH9TqCrElvm4BSgsAmHGuMWN0pVAYSloZ6y0Z19+3wcQhiO558bJuqJ3HQfthwK6Ntynt3OkizRAy0maJSrwIDAQAB",
+  "permissions": [
+    "nativeMessaging",
+    "scripting",
+    "storage",
+    "alarms"
+  ],
+  "host_permissions": [
+    "https://studio.youtube.com/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_title": "YT Subs Studio",
+    "default_popup": "popup.html"
+  }
+}

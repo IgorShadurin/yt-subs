@@ -38,8 +38,10 @@ public struct ChannelSnapshot: Codable, Equatable, Sendable {
     public let title: String
     public let count: UInt64
     public let fetchedAt: Date
-    public init(id: String, title: String, count: UInt64, fetchedAt: Date = Date()) {
-        self.id = id; self.title = title; self.count = count; self.fetchedAt = fetchedAt
+    public let avatarURL: String?
+    public let source: String?
+    public init(id: String, title: String, count: UInt64, fetchedAt: Date = Date(), avatarURL: String? = nil, source: String? = nil) {
+        self.id = id; self.title = title; self.count = count; self.fetchedAt = fetchedAt; self.avatarURL = avatarURL; self.source = source
     }
 }
 
@@ -57,7 +59,11 @@ public enum YouTubeAPI {
     public static func decode(_ data: Data, channelID: String) throws -> ChannelSnapshot {
         struct Response: Decodable {
             struct Item: Decodable {
-                struct Snippet: Decodable { let title: String }
+                struct Snippet: Decodable {
+                    struct Thumbnail: Decodable { let url: String }
+                    let title: String
+                    let thumbnails: [String: Thumbnail]?
+                }
                 struct Statistics: Decodable { let subscriberCount: String?; let hiddenSubscriberCount: Bool? }
                 let id: String; let snippet: Snippet; let statistics: Statistics
             }
@@ -66,7 +72,7 @@ public enum YouTubeAPI {
         let response = try JSONDecoder().decode(Response.self, from: data)
         guard let item = response.items.first(where: { $0.id == channelID }), item.statistics.hiddenSubscriberCount != true,
               let raw = item.statistics.subscriberCount, let count = UInt64(raw) else { throw APIError.unavailable }
-        return ChannelSnapshot(id: item.id, title: item.snippet.title, count: count)
+        return ChannelSnapshot(id: item.id, title: item.snippet.title, count: count, avatarURL: (item.snippet.thumbnails?["medium"] ?? item.snippet.thumbnails?["default"])?.url, source: "api")
     }
     public static func fetch(channelID: String, key: String) async throws -> ChannelSnapshot {
         var url = URLComponents(string: "https://www.googleapis.com/youtube/v3/channels")!
