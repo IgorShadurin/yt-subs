@@ -1,5 +1,6 @@
 let port;
 let busy = false;
+let queuedRequest;
 const HOST = 'com.ytsubs.studio';
 
 async function closeOwnedTab(tabID, channelID) {
@@ -18,7 +19,8 @@ async function cleanup() {
   await chrome.storage.session.remove('owned');
 }
 async function check(request) {
-  if (busy || !/^[\w-]{36}$/.test(request.requestID || '') || !/^UC[\w-]{22}$/.test(request.channelID || '') || Date.now()/1000 - request.createdAt > 50) return;
+  if (!/^[\w-]{36}$/.test(request.requestID || '') || !/^UC[\w-]{22}$/.test(request.channelID || '') || Date.now()/1000 - request.createdAt > 50) return;
+  if (busy) { queuedRequest = request; return; }
   busy = true;
   const reply = {requestID: request.requestID, channelID: request.channelID};
   let tabID;
@@ -52,13 +54,22 @@ async function check(request) {
     busy = false;
     try { port?.postMessage(reply); } catch {}
     await chrome.storage.local.set({lastCheck: {at: Date.now(), count: reply.count, error: reply.error}});
+    const next = queuedRequest; queuedRequest = undefined;
+    if (next) void check(next);
   }
 }
 function connect() {
   if (port) return;
   port = chrome.runtime.connectNative(HOST);
   port.onMessage.addListener(check);
-  port.onDisconnect.addListener(() => { void chrome.runtime.lastError; port = undefined; });
+  port.onDisconnect.addListener(() => {
+    const message = chrome.runtime.lastError?.message;
+    port = undefined;
+    chrome.storage.local.set({connectionError: message || 'Connector disconnected'});
+    // Alarms survive worker suspension; also retry promptly while it remains alive.
+    chrome.alarms.create('reconnect', {delayInMinutes: 0.5, periodInMinutes: 1});
+    setTimeout(connect, 5000);
+  });
 }
 chrome.runtime.onInstalled.addListener(async () => {
   await cleanup();
@@ -70,8 +81,15 @@ chrome.runtime.onStartup.addListener(async () => {
   await chrome.alarms.create('reconnect', {periodInMinutes: 1});
   connect();
 });
+chrome.runtime.onMessage.addListener((message, sender, reply) => {
+  if (sender.id === chrome.runtime.id && message?.action === 'reconnect') {
+    connect(); reply({connected: Boolean(port)});
+  }
+});
 chrome.alarms.onAlarm.addListener(async alarm => {
   if (alarm.name === 'cleanup') await cleanup();
   else connect();
 });
+// Re-establish the alarm whenever Chrome starts this worker, including browser updates.
+chrome.alarms.create('reconnect', {periodInMinutes: 1});
 connect();

@@ -1,3 +1,4 @@
+chrome.runtime.sendMessage({action: 'reconnect'}).catch(() => {});
 chrome.storage.local.get('lastCheck').then(({lastCheck}) => {
   if (!lastCheck) return;
   const el = document.getElementById('status');

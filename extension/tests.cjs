@@ -24,19 +24,20 @@ test('only the selected channel and specific subscriber card are accepted', () =
   assert.equal(YTSubsReader.read(doc,`https://studio.youtube.com/channel/${id}`),null);
 });
 function harness({fail = false, tabActive = false, navigated = false} = {}) {
-  const events = [], messages = [], storage = {};
+  const events = [], messages = [], storage = {}, alarms = [], retries = [];
+  let disconnect;
   const hook = {addListener:()=>{}};
   const chrome = {
-    runtime: {connectNative:()=>({onMessage:hook,onDisconnect:hook,postMessage:r=>messages.push(r)}), onInstalled:hook,onStartup:hook},
+    runtime: {connectNative:()=>({onMessage:hook,onDisconnect:{addListener:fn=>{disconnect=fn}},postMessage:r=>messages.push(r)}), onInstalled:hook,onStartup:hook,onMessage:hook},
     windows:{getAll:async()=>[{id:5,focused:true}]},
     tabs:{create:async options=>{events.push(['create',options]);return{id:44}}, get:async()=>({status:'complete',active:tabActive,url:navigated?'https://example.com':`https://studio.youtube.com/channel/UCabcdefghijklmnopqrstuv`}),remove:async id=>events.push(['remove',id])},
     storage:{session:{get:async()=>storage,set:async v=>Object.assign(storage,v),remove:async k=>delete storage[k]},local:{set:async()=>{}}},
-    alarms:{create:async()=>{},clear:async()=>{},onAlarm:hook},
+    alarms:{create:async(name,options)=>{alarms.push({name,options})},clear:async()=>{},onAlarm:hook},
     scripting:{executeScript:async()=>{if(fail)throw Error('network');return[{result:{channelID:'UCabcdefghijklmnopqrstuv',count:'1526',title:'Channel'}}]}}
   };
-  const context=vm.createContext({chrome,URL,setTimeout,console});
+  const context=vm.createContext({chrome,URL,setTimeout:(fn,delay)=>{retries.push(delay)},console});
   vm.runInContext(fs.readFileSync(__dirname+'/background.js','utf8'),context);
-  return {events,messages,run:()=>vm.runInContext('check({requestID:"11111111-1111-1111-1111-111111111111",channelID:"UCabcdefghijklmnopqrstuv",createdAt:Date.now()/1000})',context)};
+  return {events,messages,alarms,retries,disconnect:()=>disconnect(),run:()=>vm.runInContext('check({requestID:"11111111-1111-1111-1111-111111111111",channelID:"UCabcdefghijklmnopqrstuv",createdAt:Date.now()/1000})',context)};
 }
 test('background checks never activate tabs and close only their own tab',async()=>{
   const h=harness();await h.run();assert.equal(h.events[0][1].active,false);assert.deepEqual(h.events[1],['remove',44]);assert.equal(h.messages[0].count,'1526');
@@ -46,4 +47,12 @@ test('failures close owned tab and report an error without a fabricated count',a
 });
 test('user-activated or navigated tabs are never closed',async()=>{
   for(const options of [{tabActive:true},{navigated:true}]) { const h=harness(options);await h.run();assert.equal(h.events.filter(e=>e[0]==='remove').length,0); }
+});
+
+test('worker startup and connector loss both establish persistent reconnect alarms',()=>{
+  const h=harness();
+  assert.ok(h.alarms.some(a=>a.name==='reconnect' && a.options.periodInMinutes===1));
+  h.disconnect();
+  assert.ok(h.alarms.some(a=>a.name==='reconnect' && a.options.delayInMinutes===0.5));
+  assert.ok(h.retries.includes(5000));
 });
