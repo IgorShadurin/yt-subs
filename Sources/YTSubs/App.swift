@@ -30,6 +30,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     private var timer: Timer?
     private var request: Task<Void, Never>?
     private var flash: Task<Void, Never>?
+    @Published var growthStrength: Double = 0
+    private var statusColor: NSColor = .labelColor
     private var generation = 0
     private var settingsWindow: NSWindow?
     private var dashboardWindow: NSWindow?
@@ -60,6 +62,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
             }
         }
         if CommandLine.arguments.contains("--dashboard") { showDashboardWindow() }
+        // Visual QA only: uses the real cached count without changing or saving it.
+        if CommandLine.arguments.contains("--preview-growth") {
+            showDashboardWindow()
+            dashboardWindow?.title = "YT Subs — Growth effect preview"
+            animate(change: .increase)
+        }
     }
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
         if !popover.isShown { togglePopover() }; return true
@@ -73,24 +81,39 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
             popover.contentViewController?.view.window?.makeKey()
         }
     }
-    func render(color: NSColor = .labelColor) {
+    func render() {
         let title = snapshot.map { SubscriberFormat.string($0.count) } ?? "—"
         item.button?.image = NSImage(systemSymbolName: "play.rectangle.fill", accessibilityDescription: "YouTube subscribers")
         item.button?.imagePosition = .imageLeading
-        item.button?.attributedTitle = NSAttributedString(string: " " + title, attributes: [.foregroundColor: color, .font: NSFont.monospacedDigitSystemFont(ofSize: 13, weight: .medium)])
+        item.button?.attributedTitle = NSAttributedString(string: " " + title, attributes: [.foregroundColor: statusColor, .font: NSFont.monospacedDigitSystemFont(ofSize: 13, weight: .medium)])
         item.button?.toolTip = snapshot.map { "\($0.title): \($0.count.formatted()) subscribers • updated \($0.fetchedAt.formatted())" } ?? "YT Subs — open settings to connect a channel"
     }
-    func animate(increased: Bool) {
+    func stopAnimation() {
         flash?.cancel()
+        growthStrength = 0
+        statusColor = .labelColor
+        render()
+    }
+    func animate(change: SubscriberChange) {
+        stopAnimation()
         flash = Task { @MainActor in
-            for _ in 0..<3 {
-                guard !Task.isCancelled else { return }
-                render(color: increased ? .systemGreen : .systemRed)
-                try? await Task.sleep(for: .milliseconds(333))
-                guard !Task.isCancelled else { return }
+            let start = ProcessInfo.processInfo.systemUptime
+            while !Task.isCancelled {
+                let elapsed = ProcessInfo.processInfo.systemUptime - start
+                guard elapsed < change.duration else { break }
+                let strength = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion && change == .increase
+                    ? 1 : change.strength(at: elapsed)
+                growthStrength = change == .increase ? strength : 0
+                let tint: NSColor = change == .increase ? .systemGreen : .systemRed
+                statusColor = NSColor.labelColor.blended(withFraction: strength, of: tint) ?? tint
                 render()
-                try? await Task.sleep(for: .milliseconds(333))
+                do { try await Task.sleep(for: .milliseconds(50)) }
+                catch { return }
             }
+            guard !Task.isCancelled else { return }
+            growthStrength = 0
+            statusColor = .labelColor
+            render()
         }
     }
     func refresh() {
@@ -106,7 +129,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
                     ? StudioClient.fetch(channelID: channel)
                     : YouTubeAPI.fetch(channelID: channel, key: apiKey)
                 guard !Task.isCancelled, generation == currentGeneration else { return }
-                let previous = snapshot?.source == result.source ? snapshot?.count : nil
+                let change = SubscriberChange.between(snapshot, result)
                 snapshot = result
                 avatarTask?.cancel()
                 avatarTask = Task { @MainActor in
@@ -118,7 +141,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
                 errorMessage = nil
                 if let data = try? JSONEncoder().encode(result) { UserDefaults.standard.set(data, forKey: "snapshot") }
                 render()
-                if let previous, previous != result.count { animate(increased: result.count > previous) }
+                if let change { animate(change: change) }
             } catch {
                 guard !Task.isCancelled, generation == currentGeneration else { return }
                 failed = true
@@ -138,7 +161,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     func save(channel: String, apiKey: String, seconds: Double, source: String) throws {
         if !apiKey.isEmpty { try Keychain.save(apiKey) }
         generation += 1
-        request?.cancel(); timer?.invalidate(); flash?.cancel(); refreshing = false
+        request?.cancel(); timer?.invalidate(); stopAnimation(); refreshing = false
         if channelID != channel { avatarTask?.cancel(); avatar = nil; snapshot = nil; UserDefaults.standard.removeObject(forKey: "snapshot") }
         channelID = channel; key = apiKey; interval = seconds; self.source = source
         errorMessage = nil; lastAttemptFailed = false
@@ -217,9 +240,14 @@ struct Dashboard: View {
             }
             VStack(alignment: .leading, spacing: 2) {
                 Text(model.snapshot?.count.formatted(.number.locale(Locale(identifier: "en_US"))) ?? "—")
+                    .foregroundStyle(model.growthStrength > 0 ? Color(nsColor: .systemGreen) : Color.primary)
                     .font(.system(size: 54, weight: .bold, design: .rounded)).monospacedDigit().minimumScaleFactor(0.5).lineLimit(1).fixedSize(horizontal: false, vertical: true)
                 Text("Subscribers").font(.system(size: 17)).foregroundStyle(.secondary)
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(14)
+            .background(Color.green.opacity(model.growthStrength * 0.08), in: RoundedRectangle(cornerRadius: 14))
+            .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(Color.green.opacity(model.growthStrength * 0.75), lineWidth: 2))
             VStack(alignment: .leading, spacing: 12) {
                 HStack {
                     Label("Last updated", systemImage: "clock")

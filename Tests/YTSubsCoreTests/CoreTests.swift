@@ -47,3 +47,37 @@ final class CoreTests: XCTestCase {
         XCTAssertThrowsError(try YouTubeAPI.decode(Data("{\"items\":[]}".utf8), channelID: channel))
     }
 }
+
+final class SubscriberChangeTests: XCTestCase {
+    func reading(_ count: UInt64, id: String = "channel", source: String = "studio") -> ChannelSnapshot {
+        ChannelSnapshot(id: id, title: "Test", count: count, source: source)
+    }
+
+    func testSingleSubscriberAndCompactDisplayChanges() {
+        XCTAssertEqual(SubscriberChange.between(reading(1526), reading(1527)), .increase)
+        // Still animate when the formatted menu bar number stays at 10.1k.
+        XCTAssertEqual(SubscriberFormat.string(10100), SubscriberFormat.string(10101))
+        XCTAssertEqual(SubscriberChange.between(reading(10100), reading(10101)), .increase)
+        XCTAssertEqual(SubscriberChange.between(reading(1527), reading(1526)), .decrease)
+    }
+
+    func testNoFalseChanges() {
+        XCTAssertNil(SubscriberChange.between(nil, reading(1527)))
+        XCTAssertNil(SubscriberChange.between(reading(1527), reading(1527)))
+        XCTAssertNil(SubscriberChange.between(reading(1526), reading(1527, id: "other")))
+        XCTAssertNil(SubscriberChange.between(reading(1520, source: "api"), reading(1527)))
+    }
+
+    func testPulseLastsThirtySecondsAndResets() {
+        let effect = SubscriberChange.increase
+        XCTAssertEqual(effect.duration, 30)
+        XCTAssertEqual(effect.strength(at: 0), 1)
+        XCTAssertEqual(effect.strength(at: 1), 0.65, accuracy: 0.001)
+        XCTAssertEqual(effect.strength(at: 2), 1, accuracy: 0.001)
+        XCTAssertGreaterThan(effect.strength(at: 29.99), 0)
+        XCTAssertEqual(effect.strength(at: 30), 0)
+        XCTAssertEqual(effect.strength(at: 31), 0)
+        XCTAssertEqual(SubscriberChange.decrease.duration, 2)
+        XCTAssertEqual(SubscriberChange.decrease.strength(at: 2), 0)
+    }
+}

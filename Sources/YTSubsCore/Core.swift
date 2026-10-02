@@ -84,3 +84,23 @@ public enum YouTubeAPI {
         return try decode(data, channelID: channelID)
     }
 }
+
+/// A change is meaningful only between readings from the same channel and source.
+public enum SubscriberChange: Equatable, Sendable {
+    case increase, decrease
+
+    public static func between(_ previous: ChannelSnapshot?, _ current: ChannelSnapshot) -> Self? {
+        guard let previous, previous.id == current.id, previous.source == current.source,
+              previous.count != current.count else { return nil }
+        return current.count > previous.count ? .increase : .decrease
+    }
+
+    public var duration: TimeInterval { self == .increase ? 30 : 2 }
+
+    public func strength(at elapsed: TimeInterval) -> Double {
+        guard elapsed >= 0, elapsed < duration else { return 0 }
+        if self == .decrease { return Int(elapsed * 3) % 2 == 0 ? 1 : 0 }
+        // Gentle two-second breathing cycle. Remain visibly green between peaks.
+        return 0.65 + 0.35 * (1 + cos(elapsed * .pi)) / 2
+    }
+}

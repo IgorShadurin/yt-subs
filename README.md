@@ -5,7 +5,7 @@ A native Swift macOS menu bar app for YouTube subscriber counts. Choose **YouTub
 ## Features
 
 - Menu bar: `1,526` below 10,000, then `10.1k`, `1.2m`, etc. The popover always shows the full number received.
-- Three green flashes on an increase, red on a decrease, across two seconds. First readings and switching data sources do not flash.
+- Every increase, even one subscriber, starts a 30-second green pulse in the menu bar and a green count with a pulsing outline in the popup. Another increase restarts the 30 seconds. Decreases flash red three times over two seconds. First readings and switching channels or data sources do not animate.
 - One-minute checks by default, or a custom interval in minutes/hours.
 - Channel name and avatar are fetched automatically for either source. Metadata persists locally; avatar images are cached on disk by channel, reused across launches, and refreshed when their URL changes or after 24 hours. Switching channels clears the previous channel's display.
 - An opaque, readable popover shows the channel, source, subscriber count, last successful update, and next check. Click **YouTube Studio** to open the configured channel in your default browser.
